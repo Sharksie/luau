@@ -122,7 +122,7 @@ Assignment operators take precedence over all numerical and logical operators. `
 The behavior of a `local` assignment within an `until` evaluation might be surprising initially. The value won't be available during the next loop cycle because it gets added to the scope and then immediately terminated when the condition evaluation completes.
 
 ### Precedence
-Also, the precedence order of the operation may be confusing. Since assignment takes precedence over numerical and logical operators, one might assume `if x = 5 + 5` will read as `if x = (5 + 5)` when it actually reads as `if (x = 5) + 5`. This is a relatively simple fix with parentheses, however.
+The precedence order of the operation may be confusing. Since assignment takes precedence over numerical and logical operators, one might assume `if x = 5 + 5` will read as `if x = (5 + 5)` when it actually reads as `if (x = 5) + 5`. This is a relatively simple fix with parentheses, however.
 
 ## Alternatives
 
