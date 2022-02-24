@@ -62,6 +62,12 @@ end
 
 Enter the assignment expression. It looks like an assignment, but you use it where you would use an expression. The example above becomes trivial to write and painless to read.
 
+```lua
+if local value = foo() then
+    bar(value)
+end
+```
+
 All assignment operators work with it and it can be used in a variety of situations.
 
 ```lua
