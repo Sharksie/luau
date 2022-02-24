@@ -18,7 +18,6 @@ foo() --> 1
 The following is difficult to read.
 * If you refer to the arguments later you need to just know that they have defaults written later on.
 * If you're reading the defaults, you have to parse each argument name three times and make sure your logical expression is correct each time you want to express a possible default.
-* You can't discriminate between explicit and implicit nil
 ```lua
 function foo(a, b, c, d)
     local a = a or foo()
