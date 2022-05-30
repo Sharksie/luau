@@ -13,6 +13,7 @@
 #include <limits.h>
 
 LUAU_FASTINTVARIABLE(LuauSuggestionDistance, 4)
+LUAU_FASTFLAGVARIABLE(LuauLintGlobalNeverReadBeforeWritten, false)
 
 namespace Luau
 {
@@ -201,6 +202,7 @@ static bool similar(AstExpr* lhs, AstExpr* rhs)
 
         return true;
     }
+    CASE(AstExprIfElse) return similar(le->condition, re->condition) && similar(le->trueExpr, re->trueExpr) && similar(le->falseExpr, re->falseExpr);
     else
     {
         LUAU_ASSERT(!"Unknown expression type");
@@ -232,6 +234,20 @@ public:
     }
 
 private:
+    struct FunctionInfo
+    {
+        explicit FunctionInfo(AstExprFunction* ast)
+            : ast(ast)
+            , dominatedGlobals({})
+            , conditionalExecution(false)
+        {
+        }
+
+        AstExprFunction* ast;
+        DenseHashSet<AstName> dominatedGlobals;
+        bool conditionalExecution;
+    };
+
     struct Global
     {
         AstExprGlobal* firstRef = nullptr;
@@ -240,6 +256,9 @@ private:
 
         bool assigned = false;
         bool builtin = false;
+        bool definedInModuleScope = false;
+        bool definedAsFunction = false;
+        bool readBeforeWritten = false;
         std::optional<const char*> deprecated;
     };
 
@@ -247,7 +266,8 @@ private:
 
     DenseHashMap<AstName, Global> globals;
     std::vector<AstExprGlobal*> globalRefs;
-    std::vector<AstExprFunction*> functionStack;
+    std::vector<FunctionInfo> functionStack;
+
 
     LintGlobalLocal()
         : globals(AstName())
@@ -290,12 +310,18 @@ private:
                         "Global '%s' is only used in the enclosing function defined at line %d; consider changing it to local",
                         g.firstRef->name.value, top->location.begin.line + 1);
             }
+            else if (FFlag::LuauLintGlobalNeverReadBeforeWritten && g.assigned && !g.readBeforeWritten && !g.definedInModuleScope &&
+                     g.firstRef->name != context->placeholder)
+            {
+                emitWarning(*context, LintWarning::Code_GlobalUsedAsLocal, g.firstRef->location,
+                    "Global '%s' is never read before being written. Consider changing it to local", g.firstRef->name.value);
+            }
         }
     }
 
     bool visit(AstExprFunction* node) override
     {
-        functionStack.push_back(node);
+        functionStack.emplace_back(node);
 
         node->body->visit(this);
 
@@ -306,6 +332,11 @@ private:
 
     bool visit(AstExprGlobal* node) override
     {
+        if (FFlag::LuauLintGlobalNeverReadBeforeWritten && !functionStack.empty() && !functionStack.back().dominatedGlobals.contains(node->name))
+        {
+            Global& g = globals[node->name];
+            g.readBeforeWritten = true;
+        }
         trackGlobalRef(node);
 
         if (node->name == context->placeholder)
@@ -333,6 +364,21 @@ private:
             if (AstExprGlobal* gv = var->as<AstExprGlobal>())
             {
                 Global& g = globals[gv->name];
+
+                if (FFlag::LuauLintGlobalNeverReadBeforeWritten)
+                {
+                    if (functionStack.empty())
+                    {
+                        g.definedInModuleScope = true;
+                    }
+                    else
+                    {
+                        if (!functionStack.back().conditionalExecution)
+                        {
+                            functionStack.back().dominatedGlobals.insert(gv->name);
+                        }
+                    }
+                }
 
                 if (g.builtin)
                     emitWarning(*context, LintWarning::Code_BuiltinGlobalWrite, gv->location,
@@ -368,12 +414,111 @@ private:
                 emitWarning(*context, LintWarning::Code_BuiltinGlobalWrite, gv->location,
                     "Built-in global '%s' is overwritten here; consider using a local or changing the name", gv->name.value);
             else
+            {
                 g.assigned = true;
+                if (FFlag::LuauLintGlobalNeverReadBeforeWritten)
+                {
+                    g.definedAsFunction = true;
+                    g.definedInModuleScope = functionStack.empty();
+                }
+            }
 
             trackGlobalRef(gv);
         }
 
         return true;
+    }
+
+    class HoldConditionalExecution
+    {
+    public:
+        HoldConditionalExecution(LintGlobalLocal& p)
+            : p(p)
+        {
+            if (!p.functionStack.empty() && !p.functionStack.back().conditionalExecution)
+            {
+                resetToFalse = true;
+                p.functionStack.back().conditionalExecution = true;
+            }
+        }
+        ~HoldConditionalExecution()
+        {
+            if (resetToFalse)
+                p.functionStack.back().conditionalExecution = false;
+        }
+
+    private:
+        bool resetToFalse = false;
+        LintGlobalLocal& p;
+    };
+
+    bool visit(AstStatIf* node) override
+    {
+        if (!FFlag::LuauLintGlobalNeverReadBeforeWritten)
+            return true;
+
+        HoldConditionalExecution ce(*this);
+        node->condition->visit(this);
+        node->thenbody->visit(this);
+        if (node->elsebody)
+            node->elsebody->visit(this);
+
+        return false;
+    }
+
+    bool visit(AstStatWhile* node) override
+    {
+        if (!FFlag::LuauLintGlobalNeverReadBeforeWritten)
+            return true;
+
+        HoldConditionalExecution ce(*this);
+        node->condition->visit(this);
+        node->body->visit(this);
+
+        return false;
+    }
+
+    bool visit(AstStatRepeat* node) override
+    {
+        if (!FFlag::LuauLintGlobalNeverReadBeforeWritten)
+            return true;
+
+        HoldConditionalExecution ce(*this);
+        node->condition->visit(this);
+        node->body->visit(this);
+
+        return false;
+    }
+
+    bool visit(AstStatFor* node) override
+    {
+        if (!FFlag::LuauLintGlobalNeverReadBeforeWritten)
+            return true;
+
+        HoldConditionalExecution ce(*this);
+        node->from->visit(this);
+        node->to->visit(this);
+
+        if (node->step)
+            node->step->visit(this);
+
+        node->body->visit(this);
+
+        return false;
+    }
+
+    bool visit(AstStatForIn* node) override
+    {
+        if (!FFlag::LuauLintGlobalNeverReadBeforeWritten)
+            return true;
+
+        HoldConditionalExecution ce(*this);
+        for (AstExpr* expr : node->values)
+            expr->visit(this);
+
+        node->body->visit(this);
+
+        return false;
     }
 
     void trackGlobalRef(AstExprGlobal* node)
@@ -389,7 +534,12 @@ private:
             // to reduce the cost of tracking we only track this for user globals
             if (!g.builtin)
             {
-                g.functionRef = functionStack;
+                g.functionRef.clear();
+                g.functionRef.reserve(functionStack.size());
+                for (const FunctionInfo& entry : functionStack)
+                {
+                    g.functionRef.push_back(entry.ast);
+                }
             }
         }
         else
@@ -400,7 +550,7 @@ private:
                 // we need to find a common prefix between all uses of a global
                 size_t prefix = 0;
 
-                while (prefix < g.functionRef.size() && prefix < functionStack.size() && g.functionRef[prefix] == functionStack[prefix])
+                while (prefix < g.functionRef.size() && prefix < functionStack.size() && g.functionRef[prefix] == functionStack[prefix].ast)
                     prefix++;
 
                 g.functionRef.resize(prefix);
@@ -985,24 +1135,11 @@ private:
 
     enum TypeKind
     {
-        Kind_Invalid,
+        Kind_Unknown,
         Kind_Primitive, // primitive type supported by VM - boolean/userdata/etc. No differentiation between types of userdata.
-        Kind_Vector,    // For 'vector' but only used when type is used
-        Kind_Userdata,  // custom userdata type - Vector3/etc.
-        Kind_Class,     // custom userdata type that reflects Roblox Instance-derived hierarchy - Part/etc.
-        Kind_Enum,      // custom userdata type referring to an enum item of enum classes, e.g. Enum.NormalId.Back/Enum.Axis.X/etc.
+        Kind_Vector,    // 'vector' but only used when type is used
+        Kind_Userdata,  // custom userdata type
     };
-
-    bool containsPropName(TypeId ty, const std::string& propName)
-    {
-        if (auto ctv = get<ClassTypeVar>(ty))
-            return lookupClassProp(ctv, propName) != nullptr;
-
-        if (auto ttv = get<TableTypeVar>(ty))
-            return ttv->props.find(propName) != ttv->props.end();
-
-        return false;
-    }
 
     TypeKind getTypeKind(const std::string& name)
     {
@@ -1014,12 +1151,9 @@ private:
             return Kind_Vector;
 
         if (std::optional<TypeFun> maybeTy = context->scope->lookupType(name))
-            // Kind_Userdata is probably not 100% precise but is close enough
-            return containsPropName(maybeTy->type, "ClassName") ? Kind_Class : Kind_Userdata;
-        else if (std::optional<TypeFun> maybeTy = context->scope->lookupImportedType("Enum", name))
-            return Kind_Enum;
+            return Kind_Userdata;
 
-        return Kind_Invalid;
+        return Kind_Unknown;
     }
 
     void validateType(AstExprConstantString* expr, std::initializer_list<TypeKind> expected, const char* expectedString)
@@ -1027,7 +1161,7 @@ private:
         std::string name(expr->value.data, expr->value.size);
         TypeKind kind = getTypeKind(name);
 
-        if (kind == Kind_Invalid)
+        if (kind == Kind_Unknown)
         {
             emitWarning(*context, LintWarning::Code_UnknownType, expr->location, "Unknown type '%s'", name.c_str());
             return;
@@ -1037,59 +1171,9 @@ private:
         {
             if (kind == ek)
                 return;
-
-            // as a special case, Instance and EnumItem are both a userdata type (as returned by typeof) and a class type
-            if (ek == Kind_Userdata && (name == "Instance" || name == "EnumItem"))
-                return;
         }
 
         emitWarning(*context, LintWarning::Code_UnknownType, expr->location, "Unknown type '%s' (expected %s)", name.c_str(), expectedString);
-    }
-
-    bool acceptsClassName(AstName method)
-    {
-        return method.value[0] == 'F' && (method == "FindFirstChildOfClass" || method == "FindFirstChildWhichIsA" ||
-                                             method == "FindFirstAncestorOfClass" || method == "FindFirstAncestorWhichIsA");
-    }
-
-    bool visit(AstExprCall* node) override
-    {
-        if (AstExprIndexName* index = node->func->as<AstExprIndexName>())
-        {
-            AstExprConstantString* arg0 = node->args.size > 0 ? node->args.data[0]->as<AstExprConstantString>() : NULL;
-
-            if (arg0)
-            {
-                if (node->self && index->index == "IsA" && node->args.size == 1)
-                {
-                    validateType(arg0, {Kind_Class, Kind_Enum}, "class or enum type");
-                }
-                else if (node->self && (index->index == "GetService" || index->index == "FindService") && node->args.size == 1)
-                {
-                    AstExprGlobal* g = index->expr->as<AstExprGlobal>();
-
-                    if (g && (g->name == "game" || g->name == "Game"))
-                    {
-                        validateType(arg0, {Kind_Class}, "class type");
-                    }
-                }
-                else if (node->self && acceptsClassName(index->index) && node->args.size == 1)
-                {
-                    validateType(arg0, {Kind_Class}, "class type");
-                }
-                else if (!node->self && index->index == "new" && node->args.size <= 2)
-                {
-                    AstExprGlobal* g = index->expr->as<AstExprGlobal>();
-
-                    if (g && g->name == "Instance")
-                    {
-                        validateType(arg0, {Kind_Class}, "class type");
-                    }
-                }
-            }
-        }
-
-        return true;
     }
 
     bool visit(AstExprBinary* node) override
@@ -2569,12 +2653,12 @@ static void lintComments(LintContext& context, const std::vector<HotComment>& ho
         }
         else
         {
-            std::string::size_type space = hc.content.find_first_of(" \t");
+            size_t space = hc.content.find_first_of(" \t");
             std::string_view first = std::string_view(hc.content).substr(0, space);
 
             if (first == "nolint")
             {
-                std::string::size_type notspace = hc.content.find_first_not_of(" \t", space);
+                size_t notspace = hc.content.find_first_not_of(" \t", space);
 
                 if (space == std::string::npos || notspace == std::string::npos)
                 {
@@ -2743,7 +2827,7 @@ uint64_t LintWarning::parseMask(const std::vector<HotComment>& hotcomments)
         if (hc.content.compare(0, 6, "nolint") != 0)
             continue;
 
-        std::string::size_type name = hc.content.find_first_not_of(" \t", 6);
+        size_t name = hc.content.find_first_not_of(" \t", 6);
 
         // --!nolint disables everything
         if (name == std::string::npos)

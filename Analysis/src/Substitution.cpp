@@ -7,24 +7,29 @@
 #include <algorithm>
 #include <stdexcept>
 
-LUAU_FASTINTVARIABLE(LuauTarjanChildLimit, 1000)
+LUAU_FASTFLAG(LuauLowerBoundsCalculation)
+LUAU_FASTINTVARIABLE(LuauTarjanChildLimit, 10000)
+LUAU_FASTFLAG(LuauNoMethodLocations)
 
 namespace Luau
 {
 
 void Tarjan::visitChildren(TypeId ty, int index)
 {
-    ty = log->follow(ty);
+    LUAU_ASSERT(ty == log->follow(ty));
 
     if (ignoreChildren(ty))
         return;
 
-    if (const FunctionTypeVar* ftv = log->getMutable<FunctionTypeVar>(ty))
+    if (auto pty = log->pending(ty))
+        ty = &pty->pending;
+
+    if (const FunctionTypeVar* ftv = get<FunctionTypeVar>(ty))
     {
         visitChild(ftv->argTypes);
         visitChild(ftv->retType);
     }
-    else if (const TableTypeVar* ttv = log->getMutable<TableTypeVar>(ty))
+    else if (const TableTypeVar* ttv = get<TableTypeVar>(ty))
     {
         LUAU_ASSERT(!ttv->boundTo);
         for (const auto& [name, prop] : ttv->props)
@@ -41,38 +46,46 @@ void Tarjan::visitChildren(TypeId ty, int index)
         for (TypePackId itp : ttv->instantiatedTypePackParams)
             visitChild(itp);
     }
-    else if (const MetatableTypeVar* mtv = log->getMutable<MetatableTypeVar>(ty))
+    else if (const MetatableTypeVar* mtv = get<MetatableTypeVar>(ty))
     {
         visitChild(mtv->table);
         visitChild(mtv->metatable);
     }
-    else if (const UnionTypeVar* utv = log->getMutable<UnionTypeVar>(ty))
+    else if (const UnionTypeVar* utv = get<UnionTypeVar>(ty))
     {
         for (TypeId opt : utv->options)
             visitChild(opt);
     }
-    else if (const IntersectionTypeVar* itv = log->getMutable<IntersectionTypeVar>(ty))
+    else if (const IntersectionTypeVar* itv = get<IntersectionTypeVar>(ty))
     {
         for (TypeId part : itv->parts)
+            visitChild(part);
+    }
+    else if (const ConstrainedTypeVar* ctv = get<ConstrainedTypeVar>(ty))
+    {
+        for (TypeId part : ctv->parts)
             visitChild(part);
     }
 }
 
 void Tarjan::visitChildren(TypePackId tp, int index)
 {
-    tp = log->follow(tp);
+    LUAU_ASSERT(tp == log->follow(tp));
 
     if (ignoreChildren(tp))
         return;
 
-    if (const TypePack* tpp = log->getMutable<TypePack>(tp))
+    if (auto ptp = log->pending(tp))
+        tp = &ptp->pending;
+
+    if (const TypePack* tpp = get<TypePack>(tp))
     {
         for (TypeId tv : tpp->head)
             visitChild(tv);
         if (tpp->tail)
             visitChild(*tpp->tail);
     }
-    else if (const VariadicTypePack* vtp = log->getMutable<VariadicTypePack>(tp))
+    else if (const VariadicTypePack* vtp = get<VariadicTypePack>(tp))
     {
         visitChild(vtp->ty);
     }
@@ -141,7 +154,7 @@ TarjanResult Tarjan::loop()
         if (currEdge == -1)
         {
             ++childCount;
-            if (FInt::LuauTarjanChildLimit > 0 && FInt::LuauTarjanChildLimit < childCount)
+            if (childLimit > 0 && childLimit < childCount)
                 return TarjanResult::TooManyChildren;
 
             stack.push_back(index);
@@ -229,6 +242,9 @@ TarjanResult Tarjan::loop()
 TarjanResult Tarjan::visitRoot(TypeId ty)
 {
     childCount = 0;
+    if (childLimit == 0)
+        childLimit = FInt::LuauTarjanChildLimit;
+
     ty = log->follow(ty);
 
     auto [index, fresh] = indexify(ty);
@@ -239,6 +255,9 @@ TarjanResult Tarjan::visitRoot(TypeId ty)
 TarjanResult Tarjan::visitRoot(TypePackId tp)
 {
     childCount = 0;
+    if (childLimit == 0)
+        childLimit = FInt::LuauTarjanChildLimit;
+
     tp = log->follow(tp);
 
     auto [index, fresh] = indexify(tp);
@@ -347,7 +366,10 @@ TypeId Substitution::clone(TypeId ty)
 
     TypeId result = ty;
 
-    if (const FunctionTypeVar* ftv = log->getMutable<FunctionTypeVar>(ty))
+    if (auto pty = log->pending(ty))
+        ty = &pty->pending;
+
+    if (const FunctionTypeVar* ftv = get<FunctionTypeVar>(ty))
     {
         FunctionTypeVar clone = FunctionTypeVar{ftv->level, ftv->argTypes, ftv->retType, ftv->definition, ftv->hasSelf};
         clone.generics = ftv->generics;
@@ -357,11 +379,12 @@ TypeId Substitution::clone(TypeId ty)
         clone.argNames = ftv->argNames;
         result = addType(std::move(clone));
     }
-    else if (const TableTypeVar* ttv = log->getMutable<TableTypeVar>(ty))
+    else if (const TableTypeVar* ttv = get<TableTypeVar>(ty))
     {
         LUAU_ASSERT(!ttv->boundTo);
         TableTypeVar clone = TableTypeVar{ttv->props, ttv->indexer, ttv->level, ttv->state};
-        clone.methodDefinitionLocations = ttv->methodDefinitionLocations;
+        if (!FFlag::LuauNoMethodLocations)
+            clone.methodDefinitionLocations = ttv->methodDefinitionLocations;
         clone.definitionModuleName = ttv->definitionModuleName;
         clone.name = ttv->name;
         clone.syntheticName = ttv->syntheticName;
@@ -370,22 +393,27 @@ TypeId Substitution::clone(TypeId ty)
         clone.tags = ttv->tags;
         result = addType(std::move(clone));
     }
-    else if (const MetatableTypeVar* mtv = log->getMutable<MetatableTypeVar>(ty))
+    else if (const MetatableTypeVar* mtv = get<MetatableTypeVar>(ty))
     {
         MetatableTypeVar clone = MetatableTypeVar{mtv->table, mtv->metatable};
         clone.syntheticName = mtv->syntheticName;
         result = addType(std::move(clone));
     }
-    else if (const UnionTypeVar* utv = log->getMutable<UnionTypeVar>(ty))
+    else if (const UnionTypeVar* utv = get<UnionTypeVar>(ty))
     {
         UnionTypeVar clone;
         clone.options = utv->options;
         result = addType(std::move(clone));
     }
-    else if (const IntersectionTypeVar* itv = log->getMutable<IntersectionTypeVar>(ty))
+    else if (const IntersectionTypeVar* itv = get<IntersectionTypeVar>(ty))
     {
         IntersectionTypeVar clone;
         clone.parts = itv->parts;
+        result = addType(std::move(clone));
+    }
+    else if (const ConstrainedTypeVar* ctv = get<ConstrainedTypeVar>(ty))
+    {
+        ConstrainedTypeVar clone{ctv->level, ctv->parts};
         result = addType(std::move(clone));
     }
 
@@ -396,14 +424,18 @@ TypeId Substitution::clone(TypeId ty)
 TypePackId Substitution::clone(TypePackId tp)
 {
     tp = log->follow(tp);
-    if (const TypePack* tpp = log->getMutable<TypePack>(tp))
+
+    if (auto ptp = log->pending(tp))
+        tp = &ptp->pending;
+
+    if (const TypePack* tpp = get<TypePack>(tp))
     {
         TypePack clone;
         clone.head = tpp->head;
         clone.tail = tpp->tail;
         return addTypePack(std::move(clone));
     }
-    else if (const VariadicTypePack* vtp = log->getMutable<VariadicTypePack>(tp))
+    else if (const VariadicTypePack* vtp = get<VariadicTypePack>(tp))
     {
         VariadicTypePack clone;
         clone.ty = vtp->ty;
@@ -416,24 +448,27 @@ TypePackId Substitution::clone(TypePackId tp)
 void Substitution::foundDirty(TypeId ty)
 {
     ty = log->follow(ty);
+
     if (isDirty(ty))
-        newTypes[ty] = clean(ty);
+        newTypes[ty] = follow(clean(ty));
     else
-        newTypes[ty] = clone(ty);
+        newTypes[ty] = follow(clone(ty));
 }
 
 void Substitution::foundDirty(TypePackId tp)
 {
     tp = log->follow(tp);
+
     if (isDirty(tp))
-        newPacks[tp] = clean(tp);
+        newPacks[tp] = follow(clean(tp));
     else
-        newPacks[tp] = clone(tp);
+        newPacks[tp] = follow(clone(tp));
 }
 
 TypeId Substitution::replace(TypeId ty)
 {
     ty = log->follow(ty);
+
     if (TypeId* prevTy = newTypes.find(ty))
         return *prevTy;
     else
@@ -443,6 +478,7 @@ TypeId Substitution::replace(TypeId ty)
 TypePackId Substitution::replace(TypePackId tp)
 {
     tp = log->follow(tp);
+
     if (TypePackId* prevTp = newPacks.find(tp))
         return *prevTp;
     else
@@ -451,7 +487,10 @@ TypePackId Substitution::replace(TypePackId tp)
 
 void Substitution::replaceChildren(TypeId ty)
 {
-    ty = log->follow(ty);
+    if (BoundTypeVar* btv = log->getMutable<BoundTypeVar>(ty); FFlag::LuauLowerBoundsCalculation && btv)
+        btv->boundTo = replace(btv->boundTo);
+
+    LUAU_ASSERT(ty == log->follow(ty));
 
     if (ignoreChildren(ty))
         return;
@@ -493,11 +532,16 @@ void Substitution::replaceChildren(TypeId ty)
         for (TypeId& part : itv->parts)
             part = replace(part);
     }
+    else if (ConstrainedTypeVar* ctv = getMutable<ConstrainedTypeVar>(ty))
+    {
+        for (TypeId& part : ctv->parts)
+            part = replace(part);
+    }
 }
 
 void Substitution::replaceChildren(TypePackId tp)
 {
-    tp = log->follow(tp);
+    LUAU_ASSERT(tp == log->follow(tp));
 
     if (ignoreChildren(tp))
         return;

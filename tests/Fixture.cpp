@@ -83,7 +83,7 @@ std::optional<std::string> TestFileResolver::getEnvironmentForModule(const Modul
     return std::nullopt;
 }
 
-Fixture::Fixture(bool freeze)
+Fixture::Fixture(bool freeze, bool prepareAutocomplete)
     : sff_DebugLuauFreezeArena("DebugLuauFreezeArena", freeze)
     , frontend(&fileResolver, &configResolver, {/* retainFullTypeGraphs= */ true})
     , typeChecker(frontend.typeChecker)
@@ -92,9 +92,8 @@ Fixture::Fixture(bool freeze)
     configResolver.defaultConfig.enabledLint.warningMask = ~0ull;
     configResolver.defaultConfig.parseOptions.captureComments = true;
 
-    registerBuiltinTypes(frontend.typeChecker);
-    registerTestTypes();
     Luau::freeze(frontend.typeChecker.globalTypes);
+    Luau::freeze(frontend.typeCheckerForAutocomplete.globalTypes);
 
     Luau::setPrintLine([](auto s) {});
 }
@@ -133,26 +132,19 @@ AstStatBlock* Fixture::parse(const std::string& source, const ParseOptions& pars
 
 CheckResult Fixture::check(Mode mode, std::string source)
 {
-    configResolver.defaultConfig.mode = mode;
-    fileResolver.source[mainModuleName] = std::move(source);
-
-    CheckResult result = frontend.check(fromString(mainModuleName));
-
-    configResolver.defaultConfig.mode = Mode::Strict;
-
-    return result;
-}
-
-CheckResult Fixture::check(const std::string& source)
-{
     ModuleName mm = fromString(mainModuleName);
-    configResolver.defaultConfig.mode = Mode::Strict;
+    configResolver.defaultConfig.mode = mode;
     fileResolver.source[mm] = std::move(source);
     frontend.markDirty(mm);
 
     CheckResult result = frontend.check(mm);
 
     return result;
+}
+
+CheckResult Fixture::check(const std::string& source)
+{
+    return check(Mode::Strict, source);
 }
 
 LintResult Fixture::lint(const std::string& source, const std::optional<LintOptions>& lintOptions)
@@ -235,7 +227,7 @@ ModulePtr Fixture::getMainModule()
 
 SourceModule* Fixture::getMainSourceModule()
 {
-    return frontend.getSourceModule(fromString("MainModule"));
+    return frontend.getSourceModule(fromString(mainModuleName));
 }
 
 std::optional<PrimitiveTypeVar::Type> Fixture::getPrimitiveType(TypeId ty)
@@ -263,7 +255,7 @@ std::optional<TypeId> Fixture::getType(const std::string& name)
 TypeId Fixture::requireType(const std::string& name)
 {
     std::optional<TypeId> ty = getType(name);
-    REQUIRE(bool(ty));
+    REQUIRE_MESSAGE(bool(ty), "Unable to requireType \"" << name << "\"");
     return follow(*ty);
 }
 
@@ -412,6 +404,21 @@ LoadDefinitionFileResult Fixture::loadDefinition(const std::string& source)
 
     REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
     return result;
+}
+
+BuiltinsFixture::BuiltinsFixture(bool freeze, bool prepareAutocomplete)
+    : Fixture(freeze, prepareAutocomplete)
+{
+    Luau::unfreeze(frontend.typeChecker.globalTypes);
+    Luau::unfreeze(frontend.typeCheckerForAutocomplete.globalTypes);
+
+    registerBuiltinTypes(frontend.typeChecker);
+    if (prepareAutocomplete)
+        registerBuiltinTypes(frontend.typeCheckerForAutocomplete);
+    registerTestTypes();
+
+    Luau::freeze(frontend.typeChecker.globalTypes);
+    Luau::freeze(frontend.typeCheckerForAutocomplete.globalTypes);
 }
 
 ModuleName fromString(std::string_view name)

@@ -5,6 +5,7 @@
 #include "Luau/Location.h"
 #include "Luau/TypeVar.h"
 #include "Luau/Variant.h"
+#include "Luau/TypeArena.h"
 
 namespace Luau
 {
@@ -96,6 +97,7 @@ struct CountMismatch
     size_t expected;
     size_t actual;
     Context context = Arg;
+    bool isVariadic = false;
 
     bool operator==(const CountMismatch& rhs) const;
 };
@@ -107,8 +109,6 @@ struct FunctionDoesNotTakeSelf
 
 struct FunctionRequiresSelf
 {
-    int requiredExtraNils = 0;
-
     bool operator==(const FunctionRequiresSelf& rhs) const;
 };
 
@@ -285,12 +285,20 @@ struct TypesAreUnrelated
     bool operator==(const TypesAreUnrelated& rhs) const;
 };
 
+struct NormalizationTooComplex
+{
+    bool operator==(const NormalizationTooComplex&) const
+    {
+        return true;
+    }
+};
+
 using TypeErrorData =
     Variant<TypeMismatch, UnknownSymbol, UnknownProperty, NotATable, CannotExtendTable, OnlyTablesCanHaveMethods, DuplicateTypeDefinition,
         CountMismatch, FunctionDoesNotTakeSelf, FunctionRequiresSelf, OccursCheckFailed, UnknownRequire, IncorrectGenericParameterCount, SyntaxError,
         CodeTooComplex, UnificationTooComplex, UnknownPropButFoundLikeProp, GenericError, CannotCallNonFunction, ExtraInformation, DeprecatedApiUsed,
         ModuleHasCyclicDependency, IllegalRequire, FunctionExitsWithoutReturning, DuplicateGenericParameter, CannotInferBinaryOperation,
-        MissingProperties, SwappedGenericTypeParameter, OptionalValueAccess, MissingUnionProperty, TypesAreUnrelated>;
+        MissingProperties, SwappedGenericTypeParameter, OptionalValueAccess, MissingUnionProperty, TypesAreUnrelated, NormalizationTooComplex>;
 
 struct TypeError
 {

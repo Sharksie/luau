@@ -1,31 +1,18 @@
 name: prototyping
 
 on:
-  push:
-    branches:
-      - 'master'
-      - 'prototyping-*'
-    paths:
-      - '.github/workflows/**'
-      - 'prototyping/**'
-      - 'Analysis/**'
-      - 'Ast/**'
-      - 'CLI/Ast.cpp'
-      - 'CLI/FileUtils.*'
   pull_request:
     paths:
-      - '.github/workflows/**'
+      - '.github/workflows/prototyping.yml'
       - 'prototyping/**'
-      - 'Analysis/**'
-      - 'Ast/**'
-      - 'CLI/Ast.cpp'
-      - 'CLI/FileUtils.*'
 
 jobs:
   linux:
     strategy:
       matrix:
-        agda: [2.6.2.1]
+        agda: [2.6.2.2]
+        hackageDate: ["2022-04-07"]
+        hackageTime: ["23:06:28"]
     name: prototyping
     runs-on: ubuntu-latest
     steps:
@@ -33,7 +20,7 @@ jobs:
     - uses: actions/cache@v2
       with:
         path: ~/.cabal/store
-        key: prototyping-${{ runner.os }}-${{ matrix.agda }}
+        key: "prototyping-${{ runner.os }}-${{ matrix.agda }}-${{ matrix.hackageDate }}-${{ matrix.hackageTime }}"
     - uses: actions/cache@v2
       id: luau-ast-cache
       with:
@@ -43,17 +30,16 @@ jobs:
       run: sudo apt-get install -y cabal-install
     - name: cabal update
       working-directory: prototyping
-      run: cabal update
+      run: cabal v2-update "hackage.haskell.org,${{ matrix.hackageDate }}T${{ matrix.hackageTime }}Z"
     - name: cabal install
       working-directory: prototyping
       run: |
-        cabal install Agda-${{ matrix.agda }}
         cabal install --lib scientific vector aeson --package-env .
+        cabal install --allow-newer Agda-${{ matrix.agda }}
     - name: check targets
       working-directory: prototyping
       run: |
-        ~/.cabal/bin/agda Examples.agda
-        ~/.cabal/bin/agda Properties.agda
+        ~/.cabal/bin/agda Everything.agda
     - name: build executables
       working-directory: prototyping
       run: |

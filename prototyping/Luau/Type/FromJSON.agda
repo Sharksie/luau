@@ -1,11 +1,13 @@
+{-# OPTIONS --rewriting #-}
+
 module Luau.Type.FromJSON where
 
-open import Luau.Type using (Type; nil; _⇒_; _∪_; _∩_; any; number)
+open import Luau.Type using (Type; nil; _⇒_; _∪_; _∩_; unknown; never; number; string)
 
 open import Agda.Builtin.List using (List; _∷_; [])
+open import Agda.Builtin.Bool using (true; false)
 
 open import FFI.Data.Aeson using (Value; Array; Object; object; array; string; fromString; lookup)
-open import FFI.Data.Bool using (true; false)
 open import FFI.Data.Either using (Either; Left; Right)
 open import FFI.Data.Maybe using (Maybe; nothing; just)
 open import FFI.Data.String using (String; _++_)
@@ -40,8 +42,11 @@ typeFromJSON (object o) | just (string "AstTypeFunction") | nothing | nothing = 
 
 typeFromJSON (object o) | just (string "AstTypeReference") with lookup name o
 typeFromJSON (object o) | just (string "AstTypeReference") | just (string "nil") = Right nil
-typeFromJSON (object o) | just (string "AstTypeReference") | just (string "any") = Right any
+typeFromJSON (object o) | just (string "AstTypeReference") | just (string "any") = Right unknown -- not quite right
+typeFromJSON (object o) | just (string "AstTypeReference") | just (string "unknown") = Right unknown
+typeFromJSON (object o) | just (string "AstTypeReference") | just (string "never") = Right never
 typeFromJSON (object o) | just (string "AstTypeReference") | just (string "number") = Right number
+typeFromJSON (object o) | just (string "AstTypeReference") | just (string "string") = Right string
 typeFromJSON (object o) | just (string "AstTypeReference") | _ = Left "Unknown referenced type"
 
 typeFromJSON (object o) | just (string "AstTypeUnion") with lookup types o

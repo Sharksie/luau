@@ -241,6 +241,23 @@ TEST_CASE_FIXTURE(Fixture, "export_type_and_type_alias_are_duplicates")
     CHECK_EQ(dtd->name, "Foo");
 }
 
+TEST_CASE_FIXTURE(Fixture, "reported_location_is_correct_when_type_alias_are_duplicates")
+{
+    CheckResult result = check(R"(
+        type A = string
+        type B = number
+        type C = string
+        type B = number
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    auto dtd = get<DuplicateTypeDefinition>(result.errors[0]);
+    REQUIRE(dtd);
+    CHECK_EQ(dtd->name, "B");
+    CHECK_EQ(dtd->previousLocation.begin.line + 1, 3);
+}
+
 TEST_CASE_FIXTURE(Fixture, "stringify_optional_parameterized_alias")
 {
     CheckResult result = check(R"(
@@ -262,7 +279,7 @@ TEST_CASE_FIXTURE(Fixture, "stringify_optional_parameterized_alias")
     CHECK_EQ("Node<T>", toString(e->wantedType));
 }
 
-TEST_CASE_FIXTURE(Fixture, "general_require_multi_assign")
+TEST_CASE_FIXTURE(BuiltinsFixture, "general_require_multi_assign")
 {
     fileResolver.source["workspace/A"] = R"(
         export type myvec2 = {x: number, y: number}
@@ -300,7 +317,7 @@ TEST_CASE_FIXTURE(Fixture, "general_require_multi_assign")
     REQUIRE(bType->props.size() == 3);
 }
 
-TEST_CASE_FIXTURE(Fixture, "type_alias_import_mutation")
+TEST_CASE_FIXTURE(BuiltinsFixture, "type_alias_import_mutation")
 {
     CheckResult result = check("type t10<x> = typeof(table)");
     LUAU_REQUIRE_NO_ERRORS(result);
@@ -368,7 +385,7 @@ type Cool = typeof(c)
     CHECK_EQ(ttv->name, "Cool");
 }
 
-TEST_CASE_FIXTURE(Fixture, "type_alias_of_an_imported_recursive_type")
+TEST_CASE_FIXTURE(BuiltinsFixture, "type_alias_of_an_imported_recursive_type")
 {
     fileResolver.source["game/A"] = R"(
 export type X = { a: number, b: X? }
@@ -393,7 +410,7 @@ type X = Import.X
     CHECK_EQ(follow(*ty1), follow(*ty2));
 }
 
-TEST_CASE_FIXTURE(Fixture, "type_alias_of_an_imported_recursive_generic_type")
+TEST_CASE_FIXTURE(BuiltinsFixture, "type_alias_of_an_imported_recursive_generic_type")
 {
     fileResolver.source["game/A"] = R"(
 export type X<T, U> = { a: T, b: U, C: X<T, U>? }
@@ -472,8 +489,6 @@ TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_restriction_ok")
 
 TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_restriction_not_ok_1")
 {
-    ScopedFastFlag sff{"LuauRecursiveTypeParameterRestriction", true};
-
     CheckResult result = check(R"(
         -- OK because forwarded types are used with their parameters.
         type Tree<T> = { data: T, children: Forest<T> }
@@ -485,8 +500,6 @@ TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_restriction_not_ok_1")
 
 TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_restriction_not_ok_2")
 {
-    ScopedFastFlag sff{"LuauRecursiveTypeParameterRestriction", true};
-
     CheckResult result = check(R"(
         -- Not OK because forwarded types are used with different types than their parameters.
         type Forest<T> = {Tree<{T}>}
@@ -508,8 +521,6 @@ TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_swapsies_ok")
 
 TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_swapsies_not_ok")
 {
-    ScopedFastFlag sff{"LuauRecursiveTypeParameterRestriction", true};
-
     CheckResult result = check(R"(
         type Tree1<T,U> = { data: T, children: {Tree2<U,T>} }
         type Tree2<T,U> = { data: U, children: {Tree1<T,U>} }
@@ -553,7 +564,7 @@ TEST_CASE_FIXTURE(Fixture, "non_recursive_aliases_that_reuse_a_generic_name")
  *
  * We solved this by ascribing a unique subLevel to each prototyped alias.
  */
-TEST_CASE_FIXTURE(Fixture, "do_not_quantify_unresolved_aliases")
+TEST_CASE_FIXTURE(BuiltinsFixture, "do_not_quantify_unresolved_aliases")
 {
     CheckResult result = check(R"(
         --!strict
@@ -624,10 +635,6 @@ TEST_CASE_FIXTURE(Fixture, "forward_declared_alias_is_not_clobbered_by_prior_uni
 {
     ScopedFastFlag sff[] = {
         {"LuauTwoPassAliasDefinitionFix", true},
-
-        // We also force these two flags because this surfaced an unfortunate interaction.
-        {"LuauErrorRecoveryType", true},
-        {"LuauQuantifyInPlace2", true},
     };
 
     CheckResult result = check(R"(
@@ -652,6 +659,25 @@ TEST_CASE_FIXTURE(Fixture, "forward_declared_alias_is_not_clobbered_by_prior_uni
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "recursive_types_restriction_ok")
+{
+    CheckResult result = check(R"(
+        type Tree<T> = { data: T, children: {Tree<T>} }
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "recursive_types_restriction_not_ok")
+{
+    CheckResult result = check(R"(
+        -- this would be an infinite type if we allowed it
+        type Tree<T> = { data: T, children: {Tree<{T}>} }
+    )");
+
+    LUAU_REQUIRE_ERRORS(result);
 }
 
 TEST_SUITE_END();

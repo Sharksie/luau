@@ -91,7 +91,7 @@ struct TestConfigResolver : ConfigResolver
 
 struct Fixture
 {
-    explicit Fixture(bool freeze = true);
+    explicit Fixture(bool freeze = true, bool prepareAutocomplete = false);
     ~Fixture();
 
     // Throws Luau::ParseErrors if the parse fails.
@@ -149,6 +149,11 @@ struct Fixture
     void registerTestTypes();
 
     LoadDefinitionFileResult loadDefinition(const std::string& source);
+};
+
+struct BuiltinsFixture : Fixture
+{
+    BuiltinsFixture(bool freeze = true, bool prepareAutocomplete = false);
 };
 
 ModuleName fromString(std::string_view name);

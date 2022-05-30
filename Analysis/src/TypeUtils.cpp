@@ -5,12 +5,10 @@
 #include "Luau/ToString.h"
 #include "Luau/TypeInfer.h"
 
-LUAU_FASTFLAGVARIABLE(LuauTerminateCyclicMetatableIndexLookup, false)
-
 namespace Luau
 {
 
-std::optional<TypeId> findMetatableEntry(ErrorVec& errors, const ScopePtr& globalScope, TypeId type, std::string entry, Location location)
+std::optional<TypeId> findMetatableEntry(ErrorVec& errors, TypeId type, std::string entry, Location location)
 {
     type = follow(type);
 
@@ -37,7 +35,7 @@ std::optional<TypeId> findMetatableEntry(ErrorVec& errors, const ScopePtr& globa
         return std::nullopt;
 }
 
-std::optional<TypeId> findTablePropertyRespectingMeta(ErrorVec& errors, const ScopePtr& globalScope, TypeId ty, Name name, Location location)
+std::optional<TypeId> findTablePropertyRespectingMeta(ErrorVec& errors, TypeId ty, Name name, Location location)
 {
     if (get<AnyTypeVar>(ty))
         return ty;
@@ -49,19 +47,16 @@ std::optional<TypeId> findTablePropertyRespectingMeta(ErrorVec& errors, const Sc
             return it->second.type;
     }
 
-    std::optional<TypeId> mtIndex = findMetatableEntry(errors, globalScope, ty, "__index", location);
+    std::optional<TypeId> mtIndex = findMetatableEntry(errors, ty, "__index", location);
     int count = 0;
     while (mtIndex)
     {
         TypeId index = follow(*mtIndex);
 
-        if (FFlag::LuauTerminateCyclicMetatableIndexLookup)
-        {
-            if (count >= 100)
-                return std::nullopt;
+        if (count >= 100)
+            return std::nullopt;
 
-            ++count;
-        }
+        ++count;
 
         if (const auto& itt = getTableType(index))
         {
@@ -82,7 +77,7 @@ std::optional<TypeId> findTablePropertyRespectingMeta(ErrorVec& errors, const Sc
         else
             errors.push_back(TypeError{location, GenericError{"__index should either be a function or table. Got " + toString(index)}});
 
-        mtIndex = findMetatableEntry(errors, globalScope, *mtIndex, "__index", location);
+        mtIndex = findMetatableEntry(errors, *mtIndex, "__index", location);
     }
 
     return std::nullopt;
