@@ -15,28 +15,6 @@ This document tracks unimplemented RFCs.
 
 **Status**: Needs implementation
 
-## Sealed/unsealed typing changes
-
-[RFC: Sealed table subtyping](https://github.com/Roblox/luau/blob/master/rfcs/sealed-table-subtyping.md) |
-[RFC: Unsealed table literals](https://github.com/Roblox/luau/blob/master/rfcs/unsealed-table-literals.md) |
-[RFC: Only strip optional properties from unsealed tables during subtyping](https://github.com/Roblox/luau/blob/master/rfcs/unsealed-table-subtyping-strips-optional-properties.md)
-
-**Status**: Implemented but depends on new transaction log implementation that is not fully live yet.
-
-## Singleton types
-
-[RFC: Singleton types](https://github.com/Roblox/luau/blob/master/rfcs/syntax-singleton-types.md)
-
-**Status**: Implemented but not fully rolled out yet.
-
-## Nil-forgiving operator
-
-[RFC: nil-forgiving postfix operator !](https://github.com/Roblox/luau/blob/master/rfcs/syntax-nil-forgiving-operator.md)
-
-**Status**: Needs implementation.
-
-**Notes**: Do we need to reevaluate the necessity given `assert` and improved refinements?
-
 ## Safe navigation operator
 
 [RFC: Safe navigation postfix operator (?)](https://github.com/Roblox/luau/blob/master/rfcs/syntax-safe-navigation-operator.md)
@@ -55,4 +33,10 @@ This document tracks unimplemented RFCs.
 
 [RFC: Generalized iteration](https://github.com/Roblox/luau/blob/master/rfcs/generalized-iteration.md)
 
-**Status**: Needs implementation
+**Status**: Implemented but not fully rolled out yet.
+
+## Lower Bounds Calculation
+
+[RFC: Lower bounds calculation](https://github.com/Roblox/luau/blob/master/rfcs/lower-bounds-calculation.md)
+
+**Status**: Implemented but not fully rolled out yet.

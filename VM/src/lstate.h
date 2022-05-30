@@ -75,40 +75,65 @@ typedef struct CallInfo
 #define f_isLua(ci) (!ci_func(ci)->isC)
 #define isLua(ci) (ttisfunction((ci)->func) && f_isLua(ci))
 
-struct GCCycleStats
+struct GCStats
 {
+    // data for proportional-integral controller of heap trigger value
+    int32_t triggerterms[32] = {0};
+    uint32_t triggertermpos = 0;
+    int32_t triggerintegral = 0;
+
+    size_t atomicstarttotalsizebytes = 0;
+    size_t endtotalsizebytes = 0;
     size_t heapgoalsizebytes = 0;
+
+    double starttimestamp = 0;
+    double atomicstarttimestamp = 0;
+    double endtimestamp = 0;
+};
+
+#ifdef LUAI_GCMETRICS
+struct GCCycleMetrics
+{
+    size_t starttotalsizebytes = 0;
     size_t heaptriggersizebytes = 0;
 
-    double waittime = 0.0; // time from end of the last cycle to the start of a new one
+    double pausetime = 0.0; // time from end of the last cycle to the start of a new one
 
     double starttimestamp = 0.0;
     double endtimestamp = 0.0;
 
     double marktime = 0.0;
+    double markassisttime = 0.0;
+    double markmaxexplicittime = 0.0;
+    size_t markexplicitsteps = 0;
+    size_t markwork = 0;
 
     double atomicstarttimestamp = 0.0;
     size_t atomicstarttotalsizebytes = 0;
     double atomictime = 0.0;
 
+    // specific atomic stage parts
+    double atomictimeupval = 0.0;
+    double atomictimeweak = 0.0;
+    double atomictimegray = 0.0;
+    double atomictimeclear = 0.0;
+
     double sweeptime = 0.0;
+    double sweepassisttime = 0.0;
+    double sweepmaxexplicittime = 0.0;
+    size_t sweepexplicitsteps = 0;
+    size_t sweepwork = 0;
 
     size_t assistwork = 0;
     size_t explicitwork = 0;
 
+    size_t propagatework = 0;
+    size_t propagateagainwork = 0;
+
     size_t endtotalsizebytes = 0;
 };
 
-// data for proportional-integral controller of heap trigger value
-struct GCHeapTriggerStats
-{
-    static const unsigned termcount = 32;
-    int32_t terms[termcount] = {0};
-    uint32_t termpos = 0;
-    int32_t integral = 0;
-};
-
-struct GCStats
+struct GCMetrics
 {
     double stepexplicittimeacc = 0.0;
     double stepassisttimeacc = 0.0;
@@ -116,14 +141,10 @@ struct GCStats
     // when cycle is completed, last cycle values are updated
     uint64_t completedcycles = 0;
 
-    GCCycleStats lastcycle;
-    GCCycleStats currcycle;
-
-    // only step count and their time is accumulated
-    GCCycleStats cyclestatsacc;
-
-    GCHeapTriggerStats triggerstats;
+    GCCycleMetrics lastcycle;
+    GCCycleMetrics currcycle;
 };
+#endif
 
 /*
 ** `global state', shared by all threads of this state
@@ -142,11 +163,6 @@ typedef struct global_State
     uint8_t gcstate; /* state of garbage collector */
 
 
-    int sweepstrgc;      /* position of sweep in `strt' */
-    // TODO: remove with FFlagLuauGcPagedSweep
-    GCObject* rootgc;    /* list of all collectable objects */
-    // TODO: remove with FFlagLuauGcPagedSweep
-    GCObject** sweepgc;  /* position of sweep in `rootgc' */
     GCObject* gray;      /* list of gray objects */
     GCObject* grayagain; /* list of objects to be traversed atomically */
     GCObject* weak;     /* list of weak tables (to be cleared) */
@@ -184,12 +200,15 @@ typedef struct global_State
     uint64_t rngstate; /* PCG random number generator state */
     uint64_t ptrenckey[4]; /* pointer encoding key for display */
 
-    void (*udatagc[LUA_UTAG_LIMIT])(void*);          /* for each userdata tag, a gc callback to be called immediately before freeing memory */
+    void (*udatagc[LUA_UTAG_LIMIT])(lua_State*, void*); /* for each userdata tag, a gc callback to be called immediately before freeing memory */
 
     lua_Callbacks cb;
 
     GCStats gcstats;
 
+#ifdef LUAI_GCMETRICS
+    GCMetrics gcmetrics;
+#endif
 } global_State;
 // clang-format on
 

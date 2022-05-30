@@ -17,8 +17,6 @@
 
 #include <string.h>
 
-LUAU_FASTFLAG(LuauReduceStackReallocs)
-
 /*
 ** {======================================================
 ** Error-recovery functions
@@ -33,6 +31,15 @@ struct lua_jmpbuf
     jmp_buf buf;
 };
 
+/* use POSIX versions of setjmp/longjmp if possible: they don't save/restore signal mask and are therefore faster */
+#if defined(__linux__) || defined(__APPLE__)
+#define LUAU_SETJMP(buf) _setjmp(buf)
+#define LUAU_LONGJMP(buf, code) _longjmp(buf, code)
+#else
+#define LUAU_SETJMP(buf) setjmp(buf)
+#define LUAU_LONGJMP(buf, code) longjmp(buf, code)
+#endif
+
 int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
 {
     lua_jmpbuf jb;
@@ -40,7 +47,7 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
     jb.status = 0;
     L->global->errorjmp = &jb;
 
-    if (setjmp(jb.buf) == 0)
+    if (LUAU_SETJMP(jb.buf) == 0)
         f(L, ud);
 
     L->global->errorjmp = jb.prev;
@@ -52,7 +59,7 @@ l_noret luaD_throw(lua_State* L, int errcode)
     if (lua_jmpbuf* jb = L->global->errorjmp)
     {
         jb->status = errcode;
-        longjmp(jb->buf, 1);
+        LUAU_LONGJMP(jb->buf, 1);
     }
 
     if (L->global->cb.panic)
@@ -151,8 +158,7 @@ l_noret luaD_throw(lua_State* L, int errcode)
 static void correctstack(lua_State* L, TValue* oldstack)
 {
     L->top = (L->top - oldstack) + L->stack;
-    // TODO (FFlagLuauGcPagedSweep): 'next' type will change after removal of the flag and the cast will not be required
-    for (UpVal* up = L->openupval; up != NULL; up = (UpVal*)up->next)
+    for (UpVal* up = L->openupval; up != NULL; up = up->u.l.threadnext)
         up->v = (up->v - oldstack) + L->stack;
     for (CallInfo* ci = L->base_ci; ci <= L->ci; ci++)
     {
@@ -166,8 +172,8 @@ static void correctstack(lua_State* L, TValue* oldstack)
 void luaD_reallocstack(lua_State* L, int newsize)
 {
     TValue* oldstack = L->stack;
-    int realsize = newsize + (FFlag::LuauReduceStackReallocs ? EXTRA_STACK : 1 + EXTRA_STACK);
-    LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - (FFlag::LuauReduceStackReallocs ? EXTRA_STACK : 1 + EXTRA_STACK));
+    int realsize = newsize + EXTRA_STACK;
+    LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - EXTRA_STACK);
     luaM_reallocarray(L, L->stack, L->stacksize, realsize, TValue, L->memcat);
     TValue* newstack = L->stack;
     for (int i = L->stacksize; i < realsize; i++)
@@ -207,6 +213,14 @@ CallInfo* luaD_growCI(lua_State* L)
     return ++L->ci;
 }
 
+void luaD_checkCstack(lua_State *L)
+{
+    if (L->nCcalls == LUAI_MAXCCALLS)
+        luaG_runerror(L, "C stack overflow");
+    else if (L->nCcalls >= (LUAI_MAXCCALLS + (LUAI_MAXCCALLS >> 3)))
+        luaD_throw(L, LUA_ERRERR); /* error while handling stack error */
+}
+
 /*
 ** Call a function (C or Lua). The function to be called is at *func.
 ** The arguments are on the stack, right after the function.
@@ -216,12 +230,8 @@ CallInfo* luaD_growCI(lua_State* L)
 void luaD_call(lua_State* L, StkId func, int nResults)
 {
     if (++L->nCcalls >= LUAI_MAXCCALLS)
-    {
-        if (L->nCcalls == LUAI_MAXCCALLS)
-            luaG_runerror(L, "C stack overflow");
-        else if (L->nCcalls >= (LUAI_MAXCCALLS + (LUAI_MAXCCALLS >> 3)))
-            luaD_throw(L, LUA_ERRERR); /* error while handing stack error */
-    }
+        luaD_checkCstack(L);
+
     if (luau_precall(L, func, nResults) == PCRLUA)
     {                                        /* is a Lua function? */
         L->ci->flags |= LUA_CALLINFO_RETURN; /* luau_execute will stop after returning from the stack frame */
@@ -235,6 +245,7 @@ void luaD_call(lua_State* L, StkId func, int nResults)
         if (!oldactive)
             resetbit(L->stackstate, THREAD_ACTIVEBIT);
     }
+
     L->nCcalls--;
     luaC_checkGC(L);
 }
@@ -515,7 +526,7 @@ static void callerrfunc(lua_State* L, void* ud)
 
 static void restore_stack_limit(lua_State* L)
 {
-    LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - (FFlag::LuauReduceStackReallocs ? EXTRA_STACK : 1 + EXTRA_STACK));
+    LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - EXTRA_STACK);
     if (L->size_ci > LUAI_MAXCALLS)
     { /* there was an overflow? */
         int inuse = cast_int(L->ci - L->base_ci);

@@ -1,7 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/Error.h"
 
-#include "Luau/Module.h"
+#include "Luau/Clone.h"
 #include "Luau/StringUtils.h"
 #include "Luau/ToString.h"
 
@@ -51,7 +51,25 @@ struct ErrorConverter
 {
     std::string operator()(const Luau::TypeMismatch& tm) const
     {
-        std::string result = "Type '" + Luau::toString(tm.givenType) + "' could not be converted into '" + Luau::toString(tm.wantedType) + "'";
+        std::string givenTypeName = Luau::toString(tm.givenType);
+        std::string wantedTypeName = Luau::toString(tm.wantedType);
+
+        std::string result;
+
+        if (givenTypeName == wantedTypeName)
+        {
+            if (auto givenDefinitionModule = getDefinitionModuleName(tm.givenType))
+            {
+                if (auto wantedDefinitionModule = getDefinitionModuleName(tm.wantedType))
+                {
+                    result = "Type '" + givenTypeName + "' from '" + *givenDefinitionModule + "' could not be converted into '" + wantedTypeName +
+                             "' from '" + *wantedDefinitionModule + "'";
+                }
+            }
+        }
+
+        if (result.empty())
+            result = "Type '" + givenTypeName + "' could not be converted into '" + wantedTypeName + "'";
 
         if (tm.error)
         {
@@ -145,7 +163,7 @@ struct ErrorConverter
             return "Function only returns " + std::to_string(e.expected) + " value" + expectedS + ". " + std::to_string(e.actual) +
                    " are required here";
         case CountMismatch::Arg:
-            return "Argument count mismatch. Function " + wrongNumberOfArgsString(e.expected, e.actual);
+            return "Argument count mismatch. Function " + wrongNumberOfArgsString(e.expected, e.actual, /*argPrefix*/ nullptr, e.isVariadic);
         }
 
         LUAU_ASSERT(!"Unknown context");
@@ -159,15 +177,7 @@ struct ErrorConverter
 
     std::string operator()(const Luau::FunctionRequiresSelf& e) const
     {
-        if (e.requiredExtraNils)
-        {
-            const char* plural = e.requiredExtraNils == 1 ? "" : "s";
-            return format("This function was declared to accept self, but you did not pass enough arguments. Use a colon instead of a dot or "
-                          "pass %i extra nil%s to suppress this warning",
-                e.requiredExtraNils, plural);
-        }
-        else
-            return "This function must be called with self. Did you mean to use a colon instead of a dot?";
+        return "This function must be called with self. Did you mean to use a colon instead of a dot?";
     }
 
     std::string operator()(const Luau::OccursCheckFailed&) const
@@ -223,7 +233,7 @@ struct ErrorConverter
 
     std::string operator()(const Luau::SyntaxError& e) const
     {
-        return "Syntax error: " + e.message;
+        return e.message;
     }
 
     std::string operator()(const Luau::CodeTooComplex&) const
@@ -415,6 +425,11 @@ struct ErrorConverter
     {
         return "Cannot cast '" + toString(e.left) + "' into '" + toString(e.right) + "' because the types are unrelated";
     }
+
+    std::string operator()(const NormalizationTooComplex&) const
+    {
+        return "Code is too complex to typecheck! Consider simplifying the code around this area";
+    }
 };
 
 struct InvalidNameChecker
@@ -515,7 +530,7 @@ bool FunctionDoesNotTakeSelf::operator==(const FunctionDoesNotTakeSelf&) const
 
 bool FunctionRequiresSelf::operator==(const FunctionRequiresSelf& e) const
 {
-    return requiredExtraNils == e.requiredExtraNils;
+    return true;
 }
 
 bool OccursCheckFailed::operator==(const OccursCheckFailed&) const
@@ -680,14 +695,14 @@ bool containsParseErrorName(const TypeError& error)
 }
 
 template<typename T>
-void copyError(T& e, TypeArena& destArena, SeenTypes& seenTypes, SeenTypePacks& seenTypePacks, CloneState cloneState)
+void copyError(T& e, TypeArena& destArena, CloneState cloneState)
 {
     auto clone = [&](auto&& ty) {
-        return ::Luau::clone(ty, destArena, seenTypes, seenTypePacks, cloneState);
+        return ::Luau::clone(ty, destArena, cloneState);
     };
 
     auto visitErrorData = [&](auto&& e) {
-        copyError(e, destArena, seenTypes, seenTypePacks, cloneState);
+        copyError(e, destArena, cloneState);
     };
 
     if constexpr (false)
@@ -808,18 +823,19 @@ void copyError(T& e, TypeArena& destArena, SeenTypes& seenTypes, SeenTypePacks& 
         e.left = clone(e.left);
         e.right = clone(e.right);
     }
+    else if constexpr (std::is_same_v<T, NormalizationTooComplex>)
+    {
+    }
     else
         static_assert(always_false_v<T>, "Non-exhaustive type switch");
 }
 
 void copyErrors(ErrorVec& errors, TypeArena& destArena)
 {
-    SeenTypes seenTypes;
-    SeenTypePacks seenTypePacks;
     CloneState cloneState;
 
     auto visitErrorData = [&](auto&& e) {
-        copyError(e, destArena, seenTypes, seenTypePacks, cloneState);
+        copyError(e, destArena, cloneState);
     };
 
     LUAU_ASSERT(!destArena.typeVars.isFrozen());

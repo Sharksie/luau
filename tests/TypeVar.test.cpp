@@ -184,8 +184,6 @@ TEST_CASE_FIXTURE(Fixture, "UnionTypeVarIterator_with_empty_union")
 
 TEST_CASE_FIXTURE(Fixture, "substitution_skip_failure")
 {
-    ScopedFastFlag sff{"LuauSealExports", true};
-
     TypeVar ftv11{FreeTypeVar{TypeLevel{}}};
 
     TypePackVar tp24{TypePack{{&ftv11}}};
@@ -275,7 +273,7 @@ TEST_CASE("tagging_tables")
 
 TEST_CASE("tagging_classes")
 {
-    TypeVar base{ClassTypeVar{"Base", {}, std::nullopt, std::nullopt, {}, nullptr}};
+    TypeVar base{ClassTypeVar{"Base", {}, std::nullopt, std::nullopt, {}, nullptr, "Test"}};
     CHECK(!Luau::hasTag(&base, "foo"));
     Luau::attachTag(&base, "foo");
     CHECK(Luau::hasTag(&base, "foo"));
@@ -283,8 +281,8 @@ TEST_CASE("tagging_classes")
 
 TEST_CASE("tagging_subclasses")
 {
-    TypeVar base{ClassTypeVar{"Base", {}, std::nullopt, std::nullopt, {}, nullptr}};
-    TypeVar derived{ClassTypeVar{"Derived", {}, &base, std::nullopt, {}, nullptr}};
+    TypeVar base{ClassTypeVar{"Base", {}, std::nullopt, std::nullopt, {}, nullptr, "Test"}};
+    TypeVar derived{ClassTypeVar{"Derived", {}, &base, std::nullopt, {}, nullptr, "Test"}};
 
     CHECK(!Luau::hasTag(&base, "foo"));
     CHECK(!Luau::hasTag(&derived, "foo"));
@@ -315,23 +313,33 @@ TEST_CASE("tagging_props")
     CHECK(Luau::hasTag(prop, "foo"));
 }
 
-struct VisitCountTracker
+struct VisitCountTracker final : TypeVarOnceVisitor
 {
     std::unordered_map<TypeId, unsigned> tyVisits;
     std::unordered_map<TypePackId, unsigned> tpVisits;
 
-    void cycle(TypeId) {}
-    void cycle(TypePackId) {}
+    void cycle(TypeId) override {}
+    void cycle(TypePackId) override {}
 
     template<typename T>
     bool operator()(TypeId ty, const T& t)
+    {
+        return visit(ty);
+    }
+
+    template<typename T>
+    bool operator()(TypePackId tp, const T&)
+    {
+        return visit(tp);
+    }
+
+    bool visit(TypeId ty) override
     {
         tyVisits[ty]++;
         return true;
     }
 
-    template<typename T>
-    bool operator()(TypePackId tp, const T&)
+    bool visit(TypePackId tp) override
     {
         tpVisits[tp]++;
         return true;
@@ -349,8 +357,7 @@ local b: (T, T, T) -> T
     TypeId bType = requireType("b");
 
     VisitCountTracker tester;
-    DenseHashSet<void*> seen{nullptr};
-    visitTypeVarOnce(bType, tester, seen);
+    tester.traverse(bType);
 
     for (auto [_, count] : tester.tyVisits)
         CHECK_EQ(count, 1);
@@ -361,16 +368,12 @@ local b: (T, T, T) -> T
 
 TEST_CASE("isString_on_string_singletons")
 {
-    ScopedFastFlag sff{"LuauRefactorTypeVarQuestions", true};
-
     TypeVar helloString{SingletonTypeVar{StringSingleton{"hello"}}};
     CHECK(isString(&helloString));
 }
 
 TEST_CASE("isString_on_unions_of_various_string_singletons")
 {
-    ScopedFastFlag sff{"LuauRefactorTypeVarQuestions", true};
-
     TypeVar helloString{SingletonTypeVar{StringSingleton{"hello"}}};
     TypeVar byeString{SingletonTypeVar{StringSingleton{"bye"}}};
     TypeVar union_{UnionTypeVar{{&helloString, &byeString}}};
@@ -380,8 +383,6 @@ TEST_CASE("isString_on_unions_of_various_string_singletons")
 
 TEST_CASE("proof_that_isString_uses_all_of")
 {
-    ScopedFastFlag sff{"LuauRefactorTypeVarQuestions", true};
-
     TypeVar helloString{SingletonTypeVar{StringSingleton{"hello"}}};
     TypeVar byeString{SingletonTypeVar{StringSingleton{"bye"}}};
     TypeVar booleanType{PrimitiveTypeVar{PrimitiveTypeVar::Boolean}};
@@ -392,16 +393,12 @@ TEST_CASE("proof_that_isString_uses_all_of")
 
 TEST_CASE("isBoolean_on_boolean_singletons")
 {
-    ScopedFastFlag sff{"LuauRefactorTypeVarQuestions", true};
-
     TypeVar trueBool{SingletonTypeVar{BooleanSingleton{true}}};
     CHECK(isBoolean(&trueBool));
 }
 
 TEST_CASE("isBoolean_on_unions_of_true_or_false_singletons")
 {
-    ScopedFastFlag sff{"LuauRefactorTypeVarQuestions", true};
-
     TypeVar trueBool{SingletonTypeVar{BooleanSingleton{true}}};
     TypeVar falseBool{SingletonTypeVar{BooleanSingleton{false}}};
     TypeVar union_{UnionTypeVar{{&trueBool, &falseBool}}};
@@ -411,8 +408,6 @@ TEST_CASE("isBoolean_on_unions_of_true_or_false_singletons")
 
 TEST_CASE("proof_that_isBoolean_uses_all_of")
 {
-    ScopedFastFlag sff{"LuauRefactorTypeVarQuestions", true};
-
     TypeVar trueBool{SingletonTypeVar{BooleanSingleton{true}}};
     TypeVar falseBool{SingletonTypeVar{BooleanSingleton{false}}};
     TypeVar stringType{PrimitiveTypeVar{PrimitiveTypeVar::String}};

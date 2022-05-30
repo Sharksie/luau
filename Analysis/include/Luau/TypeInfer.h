@@ -31,81 +31,38 @@ bool doesCallError(const AstExprCall* call);
 bool hasBreak(AstStat* node);
 const AstStat* getFallthrough(const AstStat* node);
 
+struct UnifierOptions;
 struct Unifier;
-
-// A substitution which replaces generic types in a given set by free types.
-struct ReplaceGenerics : Substitution
-{
-    ReplaceGenerics(
-        const TxnLog* log, TypeArena* arena, TypeLevel level, const std::vector<TypeId>& generics, const std::vector<TypePackId>& genericPacks)
-        : Substitution(log, arena)
-        , level(level)
-        , generics(generics)
-        , genericPacks(genericPacks)
-    {
-    }
-
-    TypeLevel level;
-    std::vector<TypeId> generics;
-    std::vector<TypePackId> genericPacks;
-    bool ignoreChildren(TypeId ty) override;
-    bool isDirty(TypeId ty) override;
-    bool isDirty(TypePackId tp) override;
-    TypeId clean(TypeId ty) override;
-    TypePackId clean(TypePackId tp) override;
-};
-
-// A substitution which replaces generic functions by monomorphic functions
-struct Instantiation : Substitution
-{
-    Instantiation(const TxnLog* log, TypeArena* arena, TypeLevel level)
-        : Substitution(log, arena)
-        , level(level)
-    {
-    }
-
-    TypeLevel level;
-    bool ignoreChildren(TypeId ty) override;
-    bool isDirty(TypeId ty) override;
-    bool isDirty(TypePackId tp) override;
-    TypeId clean(TypeId ty) override;
-    TypePackId clean(TypePackId tp) override;
-};
-
-// A substitution which replaces free types by generic types.
-struct Quantification : Substitution
-{
-    Quantification(TypeArena* arena, TypeLevel level)
-        : Substitution(TxnLog::empty(), arena)
-        , level(level)
-    {
-    }
-
-    TypeLevel level;
-    std::vector<TypeId> generics;
-    std::vector<TypePackId> genericPacks;
-    bool isDirty(TypeId ty) override;
-    bool isDirty(TypePackId tp) override;
-    TypeId clean(TypeId ty) override;
-    TypePackId clean(TypePackId tp) override;
-};
 
 // A substitution which replaces free types by any
 struct Anyification : Substitution
 {
-    Anyification(TypeArena* arena, TypeId anyType, TypePackId anyTypePack)
+    Anyification(TypeArena* arena, InternalErrorReporter* iceHandler, TypeId anyType, TypePackId anyTypePack)
         : Substitution(TxnLog::empty(), arena)
+        , iceHandler(iceHandler)
         , anyType(anyType)
         , anyTypePack(anyTypePack)
     {
     }
 
+    InternalErrorReporter* iceHandler;
+
     TypeId anyType;
     TypePackId anyTypePack;
+    bool normalizationTooComplex = false;
     bool isDirty(TypeId ty) override;
     bool isDirty(TypePackId tp) override;
     TypeId clean(TypeId ty) override;
     TypePackId clean(TypePackId tp) override;
+
+    bool ignoreChildren(TypeId ty) override
+    {
+        return ty->persistent;
+    }
+    bool ignoreChildren(TypePackId ty) override
+    {
+        return ty->persistent;
+    }
 };
 
 // A substitution which replaces the type parameters of a type function by arguments
@@ -141,6 +98,12 @@ struct HashBoolNamePair
     size_t operator()(const std::pair<bool, Name>& pair) const;
 };
 
+class TimeLimitError : public std::exception
+{
+public:
+    virtual const char* what() const throw();
+};
+
 // All TypeVars are retained via Environment::typeVars.  All TypeIds
 // within a program are borrowed pointers into this set.
 struct TypeChecker
@@ -150,6 +113,7 @@ struct TypeChecker
     TypeChecker& operator=(const TypeChecker&) = delete;
 
     ModulePtr check(const SourceModule& module, Mode mode, std::optional<ScopePtr> environmentScope = std::nullopt);
+    ModulePtr checkWithoutRecursionCheck(const SourceModule& module, Mode mode, std::optional<ScopePtr> environmentScope = std::nullopt);
 
     std::vector<std::pair<Location, ScopePtr>> getScopes() const;
 
@@ -171,6 +135,7 @@ struct TypeChecker
     void check(const ScopePtr& scope, const AstStatDeclareFunction& declaredFunction);
 
     void checkBlock(const ScopePtr& scope, const AstStatBlock& statement);
+    void checkBlockWithoutRecursionCheck(const ScopePtr& scope, const AstStatBlock& statement);
     void checkBlockTypeAliases(const ScopePtr& scope, std::vector<AstStat*>& sorted);
 
     ExprResult<TypeId> checkExpr(
@@ -245,6 +210,7 @@ struct TypeChecker
      * Treat any failures as type errors in the final typecheck report.
      */
     bool unify(TypeId subTy, TypeId superTy, const Location& location);
+    bool unify(TypeId subTy, TypeId superTy, const Location& location, const UnifierOptions& options);
     bool unify(TypePackId subTy, TypePackId superTy, const Location& location, CountMismatch::Context ctx = CountMismatch::Context::Arg);
 
     /** Attempt to unify the types.
@@ -267,6 +233,8 @@ struct TypeChecker
     ErrorVec canUnify_(Id subTy, Id superTy, const Location& location);
     ErrorVec canUnify(TypeId subTy, TypeId superTy, const Location& location);
     ErrorVec canUnify(TypePackId subTy, TypePackId superTy, const Location& location);
+
+    void unifyLowerBound(TypePackId subTy, TypePackId superTy, const Location& location);
 
     std::optional<TypeId> findMetatableEntry(TypeId type, std::string entry, const Location& location);
     std::optional<TypeId> findTablePropertyRespectingMeta(TypeId lhsType, Name name, const Location& location);
@@ -387,7 +355,7 @@ private:
         const AstArray<AstGenericType>& genericNames, const AstArray<AstGenericTypePack>& genericPackNames, bool useCache = false);
 
 public:
-    ErrorVec resolve(const PredicateVec& predicates, const ScopePtr& scope, bool sense);
+    void resolve(const PredicateVec& predicates, const ScopePtr& scope, bool sense);
 
 private:
     void refineLValue(const LValue& lvalue, RefinementMap& refis, const ScopePtr& scope, TypeIdPredicate predicate);
@@ -395,16 +363,17 @@ private:
     std::optional<TypeId> resolveLValue(const ScopePtr& scope, const LValue& lvalue);
     std::optional<TypeId> resolveLValue(const RefinementMap& refis, const ScopePtr& scope, const LValue& lvalue);
 
-    void resolve(const PredicateVec& predicates, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense, bool fromOr = false);
-    void resolve(const Predicate& predicate, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense, bool fromOr);
-    void resolve(const TruthyPredicate& truthyP, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense, bool fromOr);
-    void resolve(const AndPredicate& andP, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense);
-    void resolve(const OrPredicate& orP, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense);
-    void resolve(const IsAPredicate& isaP, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense);
-    void resolve(const TypeGuardPredicate& typeguardP, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense);
-    void resolve(const EqPredicate& eqP, ErrorVec& errVec, RefinementMap& refis, const ScopePtr& scope, bool sense);
+    void resolve(const PredicateVec& predicates, RefinementMap& refis, const ScopePtr& scope, bool sense, bool fromOr = false);
+    void resolve(const Predicate& predicate, RefinementMap& refis, const ScopePtr& scope, bool sense, bool fromOr);
+    void resolve(const TruthyPredicate& truthyP, RefinementMap& refis, const ScopePtr& scope, bool sense, bool fromOr);
+    void resolve(const AndPredicate& andP, RefinementMap& refis, const ScopePtr& scope, bool sense);
+    void resolve(const OrPredicate& orP, RefinementMap& refis, const ScopePtr& scope, bool sense);
+    void resolve(const IsAPredicate& isaP, RefinementMap& refis, const ScopePtr& scope, bool sense);
+    void resolve(const TypeGuardPredicate& typeguardP, RefinementMap& refis, const ScopePtr& scope, bool sense);
+    void resolve(const EqPredicate& eqP, RefinementMap& refis, const ScopePtr& scope, bool sense);
 
     bool isNonstrictMode() const;
+    bool useConstrainedIntersections() const;
 
 public:
     /** Extract the types in a type pack, given the assumption that the pack must have some exact length.
@@ -428,6 +397,13 @@ public:
     InternalErrorReporter* iceHandler;
 
     UnifierSharedState unifierState;
+
+    std::vector<RequireCycle> requireCycles;
+
+    // Type inference limits
+    std::optional<double> finishTime;
+    std::optional<int> instantiationChildLimit;
+    std::optional<int> unifierIterationLimit;
 
 public:
     const TypeId nilType;
